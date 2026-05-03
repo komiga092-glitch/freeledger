@@ -30,10 +30,10 @@ $msg = '';
 $msgType = 'success';
 
 $currentRole = verify_user_role($user_id, $company_id);
+$currentRole = normalize_role_value($currentRole);
 
-$canView = in_array($currentRole, ['organization', 'auditor', 'accountant'], true);
-$canCrud = ($currentRole === 'accountant');
-
+$canView = in_array($currentRole, ['organization', 'accountant', 'auditor'], true);
+$canCrud = $currentRole === 'accountant'; // Only accountant can CRUD
 if (!$canView) {
     header("Location: dashboard.php");
     exit;
@@ -49,7 +49,8 @@ function resetIncomeForm(): array
         'description' => '',
         'payment_source' => 'Cash',
         'bank_name' => '',
-        'account_number' => ''
+        'account_number' => '',
+        'proof_file' => ''
     ];
 }
 
@@ -244,13 +245,50 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_income'])) {
             $msg = 'Bank name and account number are required for bank payments.';
             $msgType = 'danger';
         } else {
+            // Handle file upload
+            $proof_file_path = '';
+            if (isset($_FILES['proof_file']) && $_FILES['proof_file']['error'] === UPLOAD_ERR_OK) {
+                $uploadDir = __DIR__ . '/uploads/transactions/';
+                if (!is_dir($uploadDir)) {
+                    mkdir($uploadDir, 0777, true);
+                }
+
+                $fileName = $_FILES['proof_file']['name'];
+                $fileTmp = $_FILES['proof_file']['tmp_name'];
+                $fileSize = $_FILES['proof_file']['size'];
+                $fileExt = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+
+                $allowedExts = ['jpg', 'jpeg', 'png', 'pdf', 'doc', 'docx'];
+                $maxSize = 5 * 1024 * 1024; // 5MB
+
+                if (!in_array($fileExt, $allowedExts)) {
+                    $msg = 'Invalid file type. Only JPG, PNG, PDF, DOC, DOCX allowed.';
+                    $msgType = 'danger';
+                } elseif ($fileSize > $maxSize) {
+                    $msg = 'File size too large. Maximum 5MB allowed.';
+                    $msgType = 'danger';
+                } else {
+                    $safeName = uniqid('income_' . $company_id . '_', true) . '.' . $fileExt;
+                    $targetPath = $uploadDir . $safeName;
+
+                    if (move_uploaded_file($fileTmp, $targetPath)) {
+                        $proof_file_path = $safeName;
+                    } else {
+                        $msg = 'Failed to upload file.';
+                        $msgType = 'danger';
+                    }
+                }
+            }
+
+            if ($msgType !== 'danger') {
             $conn->begin_transaction();
 
             try {
                 if ($income_id > 0) {
                     $stmt = $conn->prepare("
                         UPDATE income
-                        SET income_type = ?, amount = ?, income_date = ?, description = ?, payment_source = ?, bank_name = ?, account_number = ?
+                        SET income_type = ?, amount = ?, income_date = ?, description = ?, payment_source = ?, bank_name = ?, account_number = ?" . 
+                        ($proof_file_path ? ", proof_file = ?" : "") . "
                         WHERE company_id = ? AND income_id = ?
                     ");
 
@@ -258,18 +296,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_income'])) {
                         throw new Exception('Failed to prepare update query.');
                     }
 
-                    $stmt->bind_param(
-                        "sdsssssii",
-                        $income_type,
-                        $amount,
-                        $income_date,
-                        $description,
-                        $payment_source,
-                        $bank_name,
-                        $account_number,
-                        $company_id,
-                        $income_id
-                    );
+                    if ($proof_file_path) {
+                        $stmt->bind_param(
+                            "sdsssssssii",
+                            $income_type,
+                            $amount,
+                            $income_date,
+                            $description,
+                            $payment_source,
+                            $bank_name,
+                            $account_number,
+                            $proof_file_path,
+                            $company_id,
+                            $income_id
+                        );
+                    } else {
+                        $stmt->bind_param(
+                            "sdsssssii",
+                            $income_type,
+                            $amount,
+                            $income_date,
+                            $description,
+                            $payment_source,
+                            $bank_name,
+                            $account_number,
+                            $company_id,
+                            $income_id
+                        );
+                    }
                     $stmt->execute();
                     $stmt->close();
 
@@ -303,25 +357,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_income'])) {
                             description,
                             payment_source,
                             bank_name,
-                            account_number
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            account_number" .
+                            ($proof_file_path ? ", proof_file" : "") . "
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?" .
+                        ($proof_file_path ? ", ?" : "") . ")
                     ");
 
                     if (!$stmt) {
                         throw new Exception('Failed to prepare insert query.');
                     }
 
-                    $stmt->bind_param(
-                        "isdsssss",
-                        $company_id,
-                        $income_type,
-                        $amount,
-                        $income_date,
-                        $description,
-                        $payment_source,
-                        $bank_name,
-                        $account_number
-                    );
+                    if ($proof_file_path) {
+                        $stmt->bind_param(
+                            "isdssssss",
+                            $company_id,
+                            $income_type,
+                            $amount,
+                            $income_date,
+                            $description,
+                            $payment_source,
+                            $bank_name,
+                            $account_number,
+                            $proof_file_path
+                        );
+                    } else {
+                        $stmt->bind_param(
+                            "isdsssss",
+                            $company_id,
+                            $income_type,
+                            $amount,
+                            $income_date,
+                            $description,
+                            $payment_source,
+                            $bank_name,
+                            $account_number
+                        );
+                    }
                     $stmt->execute();
                     $new_income_id = (int)$stmt->insert_id;
                     $stmt->close();
@@ -364,6 +435,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_income'])) {
         }
     }
 }
+}
 
 /* =========================
    FETCH ALL INCOME ROWS
@@ -389,111 +461,103 @@ if ($stmt) {
 
 include 'includes/header.php';
 include 'includes/sidebar.php';
+include 'includes/topbar.php';
 ?>
 
 <div class="main-area">
-    <div class="topbar">
-        <div class="topbar-left">
-            <button class="menu-toggle" id="menuToggle">☰</button>
-            <div class="page-heading">
-                <h1>Income Management</h1>
-                <p><?= e($pageDescription) ?></p>
-            </div>
-        </div>
-
-        <div class="topbar-right">
-            <div class="company-pill"><?= e($_SESSION['company_name'] ?? 'Company') ?></div>
-            <div class="role-pill"><?= e($_SESSION['role'] ?? 'User') ?></div>
-            <div class="user-chip">
-                <div class="avatar"><?= e(strtoupper(substr($_SESSION['full_name'] ?? 'U', 0, 1))) ?></div>
-                <div class="meta">
-                    <strong><?= e($_SESSION['full_name'] ?? 'User') ?></strong>
-                    <span><?= e($_SESSION['email'] ?? '') ?></span>
-                </div>
-            </div>
-        </div>
-    </div>
-
     <div class="content">
         <?php if ($msg !== ''): ?>
-            <div class="alert alert-<?= e($msgType) ?>"><?= e($msg) ?></div>
+        <div class="alert alert-<?= e($msgType) ?>"><?= e($msg) ?></div>
         <?php endif; ?>
 
         <?php if ($canCrud): ?>
-            <div class="card">
-                <div class="card-header">
-                    <h3><?= $edit_mode ? 'Edit Income' : 'Add Income' ?></h3>
-                    <span class="badge badge-primary">Professional Entry</span>
-                </div>
-
-                <div class="card-body">
-                    <form method="POST">
-                        <?= csrf_field() ?>
-                        <input type="hidden" name="income_id" value="<?= e($edit['income_id']) ?>">
-
-                        <div class="form-grid">
-                            <div class="form-group">
-                                <label class="form-label">Income Type</label>
-                                <input type="text" name="income_type" class="form-control"
-                                    placeholder="Donations / Grants / Membership Fees"
-                                    value="<?= e($edit['income_type']) ?>" required>
-                            </div>
-
-                            <div class="form-group">
-                                <label class="form-label">Amount</label>
-                                <input type="number" step="0.01" min="0.01" name="amount" class="form-control"
-                                    value="<?= e($edit['amount']) ?>" required>
-                            </div>
-
-                            <div class="form-group">
-                                <label class="form-label">Income Date</label>
-                                <input type="date" name="income_date" class="form-control"
-                                    value="<?= e($edit['income_date']) ?>" required>
-                            </div>
-
-                            <div class="form-group">
-                                <label class="form-label">Payment Source</label>
-                                <select name="payment_source" class="form-control" id="incomePaymentSource"
-                                    onchange="toggleIncomeBankFields(this.value)">
-                                    <option value="Cash"
-                                        <?= ($edit['payment_source'] ?? 'Cash') === 'Cash' ? 'selected' : '' ?>>Cash
-                                    </option>
-                                    <option value="Bank"
-                                        <?= ($edit['payment_source'] ?? '') === 'Bank' ? 'selected' : '' ?>>Bank</option>
-                                </select>
-                            </div>
-
-                            <div class="form-group" id="incomeBankNameWrap" style="display:none;">
-                                <label class="form-label">Bank Name</label>
-                                <input type="text" name="bank_name" class="form-control"
-                                    value="<?= e($edit['bank_name']) ?>">
-                            </div>
-
-                            <div class="form-group" id="incomeAccountNoWrap" style="display:none;">
-                                <label class="form-label">Account Number</label>
-                                <input type="text" name="account_number" class="form-control"
-                                    value="<?= e($edit['account_number']) ?>">
-                            </div>
-
-                            <div class="form-group full">
-                                <label class="form-label">Description</label>
-                                <textarea name="description" class="form-control"
-                                    placeholder="Enter remarks"><?= e($edit['description']) ?></textarea>
-                            </div>
-
-                            <div class="form-group full">
-                                <button type="submit" name="save_income" class="btn btn-primary">
-                                    <?= $edit_mode ? 'Update Income' : 'Save Income' ?>
-                                </button>
-
-                                <?php if ($edit_mode): ?>
-                                    <a href="income.php" class="btn btn-light">Cancel</a>
-                                <?php endif; ?>
-                            </div>
-                        </div>
-                    </form>
-                </div>
+        <div class="card">
+            <div class="card-header">
+                <h3><?= $edit_mode ? 'Edit Income' : 'Add Income' ?></h3>
+                <span class="badge badge-primary">Professional Entry</span>
             </div>
+
+            <div class="card-body">
+                <form method="POST" enctype="multipart/form-data">
+                    <?= csrf_field() ?>
+                    <input type="hidden" name="income_id" value="<?= e($edit['income_id']) ?>">
+
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label class="form-label">Income Type</label>
+                            <input type="text" name="income_type" class="form-control"
+                                placeholder="Donations / Grants / Membership Fees"
+                                value="<?= e($edit['income_type']) ?>" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">Amount</label>
+                            <input type="number" step="0.01" min="0.01" name="amount" class="form-control"
+                                value="<?= e($edit['amount']) ?>" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">Income Date</label>
+                            <input type="date" name="income_date" class="form-control"
+                                value="<?= e($edit['income_date']) ?>" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">Payment Source</label>
+                            <select name="payment_source" class="form-control" id="incomePaymentSource"
+                                onchange="toggleIncomeBankFields(this.value)">
+                                <option value="Cash"
+                                    <?= ($edit['payment_source'] ?? 'Cash') === 'Cash' ? 'selected' : '' ?>>Cash
+                                </option>
+                                <option value="Bank"
+                                    <?= ($edit['payment_source'] ?? '') === 'Bank' ? 'selected' : '' ?>>Bank</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group hidden" id="incomeBankNameWrap">
+                            <label class="form-label">Bank Name</label>
+                            <input type="text" name="bank_name" class="form-control"
+                                value="<?= e($edit['bank_name']) ?>">
+                        </div>
+
+                        <div class="form-group hidden" id="incomeAccountNoWrap">
+                            <label class="form-label">Account Number</label>
+                            <input type="text" name="account_number" class="form-control"
+                                value="<?= e($edit['account_number']) ?>">
+                        </div>
+
+                        <div class="form-group full">
+                            <label class="form-label">Description</label>
+                            <textarea name="description" class="form-control"
+                                placeholder="Enter remarks"><?= e($edit['description']) ?></textarea>
+                        </div>
+
+                        <div class="form-group full">
+                            <label class="form-label">Proof/Attachment (Optional)</label>
+                            <input type="file" name="proof_file" class="form-control"
+                                accept=".jpg,.jpeg,.png,.pdf,.doc,.docx">
+                            <small class="form-text">Upload receipts, documents, or images as proof (Max 5MB)</small>
+                            <?php if ($edit_mode && !empty($edit['proof_file'])): ?>
+                            <div class="mt-2">
+                                <a href="uploads/transactions/<?= e($edit['proof_file']) ?>" target="_blank"
+                                    class="btn btn-sm btn-outline-primary">View Current File</a>
+                            </div>
+                            <?php endif; ?>
+                        </div>
+
+                        <div class="form-group full">
+                            <button type="submit" name="save_income" class="btn btn-primary">
+                                <?= $edit_mode ? 'Update Income' : 'Save Income' ?>
+                            </button>
+
+                            <?php if ($edit_mode): ?>
+                            <a href="income.php" class="btn btn-light">Cancel</a>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
         <?php endif; ?>
 
         <div class="card<?= $canCrud ? ' mt-24' : '' ?>">
@@ -518,31 +582,32 @@ include 'includes/sidebar.php';
                         </thead>
                         <tbody>
                             <?php if (!empty($rows)): ?>
-                                <?php foreach ($rows as $row): ?>
-                                    <tr>
-                                        <td><?= e($row['income_id']) ?></td>
-                                        <td><?= e($row['income_type']) ?></td>
-                                        <td>Rs. <?= number_format((float)$row['amount'], 2) ?></td>
-                                        <td><?= e($row['income_date']) ?></td>
-                                        <td>
-                                            <span class="badge badge-primary"><?= e($row['payment_source']) ?></span>
-                                        </td>
-                                        <td><?= e($row['description']) ?></td>
-                                        <td>
-                                            <?php if ($canCrud): ?>
-                                                <a class="btn btn-light" href="?edit=<?= (int)$row['income_id'] ?>">Edit</a>
-                                                <a class="btn btn-danger" href="?delete=<?= (int)$row['income_id'] ?>&csrf_token=<?= urlencode(get_csrf_token()) ?>"
-                                                    onclick="return confirm('Delete this income record?')">Delete</a>
-                                            <?php else: ?>
-                                                <span class="text-muted">View Only</span>
-                                            <?php endif; ?>
-                                        </td>
-                                    </tr>
-                                <?php endforeach; ?>
+                            <?php foreach ($rows as $row): ?>
+                            <tr>
+                                <td><?= e($row['income_id']) ?></td>
+                                <td><?= e($row['income_type']) ?></td>
+                                <td>Rs. <?= number_format((float)$row['amount'], 2) ?></td>
+                                <td><?= e($row['income_date']) ?></td>
+                                <td>
+                                    <span class="badge badge-primary"><?= e($row['payment_source']) ?></span>
+                                </td>
+                                <td><?= e($row['description']) ?></td>
+                                <td>
+                                    <?php if ($canCrud): ?>
+                                    <a class="btn btn-light" href="?edit=<?= (int)$row['income_id'] ?>">Edit</a>
+                                    <a class="btn btn-danger"
+                                        href="?delete=<?= (int)$row['income_id'] ?>&csrf_token=<?= urlencode(get_csrf_token()) ?>"
+                                        onclick="return confirm('Delete this income record?')">Delete</a>
+                                    <?php else: ?>
+                                    <span class="text-muted">View Only</span>
+                                    <?php endif; ?>
+                                </td>
+                            </tr>
+                            <?php endforeach; ?>
                             <?php else: ?>
-                                <tr>
-                                    <td colspan="7">No income records found.</td>
-                                </tr>
+                            <tr>
+                                <td colspan="7">No income records found.</td>
+                            </tr>
                             <?php endif; ?>
                         </tbody>
                     </table>
@@ -555,20 +620,20 @@ include 'includes/sidebar.php';
 <?php include 'includes/footer.php'; ?>
 
 <script>
-    function toggleIncomeBankFields(value) {
-        const bankWrap = document.getElementById('incomeBankNameWrap');
-        const accWrap = document.getElementById('incomeAccountNoWrap');
+function toggleIncomeBankFields(value) {
+    const bankWrap = document.getElementById('incomeBankNameWrap');
+    const accWrap = document.getElementById('incomeAccountNoWrap');
 
-        if (!bankWrap || !accWrap) {
-            return;
-        }
-
-        bankWrap.style.display = value === 'Bank' ? 'block' : 'none';
-        accWrap.style.display = value === 'Bank' ? 'block' : 'none';
+    if (!bankWrap || !accWrap) {
+        return;
     }
 
-    const incomePaymentSource = document.getElementById('incomePaymentSource');
-    if (incomePaymentSource) {
-        toggleIncomeBankFields(incomePaymentSource.value);
-    }
+    bankWrap.style.display = value === 'Bank' ? 'block' : 'none';
+    accWrap.style.display = value === 'Bank' ? 'block' : 'none';
+}
+
+const incomePaymentSource = document.getElementById('incomePaymentSource');
+if (incomePaymentSource) {
+    toggleIncomeBankFields(incomePaymentSource.value);
+}
 </script>

@@ -1,23 +1,45 @@
 <?php
-session_start();
-require_once 'config/db.php';
+declare(strict_types=1);
 
-if (!isset($_SESSION['user_id'])) {
+session_start();
+
+require_once 'config/db.php';
+require_once 'includes/security.php';
+require_once 'includes/functions.php';
+
+set_security_headers();
+
+if (!isset($_SESSION['user_id']) || (int)($_SESSION['user_id'] ?? 0) <= 0) {
     header("Location: login.php");
     exit;
 }
 
 $company_id = (int)($_SESSION['company_id'] ?? 0);
+$user_id    = (int)($_SESSION['user_id'] ?? 0);
+
 if ($company_id <= 0) {
     header("Location: dashboard.php");
     exit;
 }
 
+/* ---------- ROLE CHECK ---------- */
+if (function_exists('verify_user_role')) {
+    $currentRole = verify_user_role($user_id, $company_id);
+} else {
+    $currentRole = normalize_role_value((string)($_SESSION['role_in_company'] ?? $_SESSION['role'] ?? ''));
+}
+
+$currentRole = normalize_role_value((string)$currentRole);
+
+if (!in_array($currentRole, ['organization', 'accountant', 'auditor'], true)) {
+    die('Access denied.');
+}
+
 $pageTitle = 'Assets & Liabilities Report';
 $pageDescription = 'Professional English statement with final balance check';
 
-$from_date = trim($_GET['from_date'] ?? date('Y-01-01'));
-$to_date   = trim($_GET['to_date'] ?? date('Y-m-d'));
+$from_date = trim((string)($_GET['from_date'] ?? date('Y-01-01')));
+$to_date   = trim((string)($_GET['to_date'] ?? date('Y-m-d')));
 
 if ($from_date === '' || $to_date === '') {
     $from_date = date('Y-01-01');
@@ -25,14 +47,10 @@ if ($from_date === '' || $to_date === '') {
 }
 
 if ($from_date > $to_date) {
-    $temp = $from_date;
-    $from_date = $to_date;
-    $to_date = $temp;
+    [$from_date, $to_date] = [$to_date, $from_date];
 }
 
-/* =========================
-   COMPANY
-========================= */
+/* COMPANY */
 $company = [];
 $stmt = $conn->prepare("
     SELECT company_id, company_name, registration_no, email, phone, address
@@ -46,11 +64,9 @@ $res = $stmt->get_result();
 $company = $res->fetch_assoc() ?: [];
 $stmt->close();
 
-/* =========================
-   ASSETS
-========================= */
+/* ASSETS */
 $asset_rows = [];
-$total_assets = 0;
+$total_assets = 0.00;
 
 $stmt = $conn->prepare("
     SELECT asset_name, asset_type, purchase_date,
@@ -76,10 +92,8 @@ while ($row = $res->fetch_assoc()) {
 }
 $stmt->close();
 
-/* =========================
-   CASH BALANCE
-========================= */
-$opening_cash = 0;
+/* CASH BALANCE */
+$opening_cash = 0.00;
 $stmt = $conn->prepare("
     SELECT COALESCE(SUM(opening_balance), 0) AS opening_cash
     FROM cash_accounts
@@ -94,7 +108,7 @@ if ($row = $res->fetch_assoc()) {
 }
 $stmt->close();
 
-$cash_transactions = 0;
+$cash_transactions = 0.00;
 $stmt = $conn->prepare("
     SELECT COALESCE(SUM(
         CASE
@@ -117,10 +131,8 @@ $stmt->close();
 
 $cash_balance = $opening_cash + $cash_transactions;
 
-/* =========================
-   BANK BALANCE
-========================= */
-$opening_bank = 0;
+/* BANK BALANCE */
+$opening_bank = 0.00;
 $stmt = $conn->prepare("
     SELECT COALESCE(SUM(balance), 0) AS opening_bank
     FROM bank_accounts
@@ -135,7 +147,7 @@ if ($row = $res->fetch_assoc()) {
 }
 $stmt->close();
 
-$bank_transactions = 0;
+$bank_transactions = 0.00;
 $stmt = $conn->prepare("
     SELECT COALESCE(SUM(
         CASE
@@ -158,53 +170,12 @@ $stmt->close();
 
 $bank_balance = $opening_bank + $bank_transactions;
 
-/* =========================
-   INCOME TOTAL
-========================= */
-$total_income = 0;
-$stmt = $conn->prepare("
-    SELECT COALESCE(SUM(amount), 0) AS total_income
-    FROM income
-    WHERE company_id = ?
-      AND income_date <= ?
-");
-$stmt->bind_param("is", $company_id, $to_date);
-$stmt->execute();
-$res = $stmt->get_result();
-if ($row = $res->fetch_assoc()) {
-    $total_income = (float)$row['total_income'];
-}
-$stmt->close();
-
-/* =========================
-   EXPENSE TOTAL
-========================= */
-$total_expense = 0;
-$stmt = $conn->prepare("
-    SELECT COALESCE(SUM(amount), 0) AS total_expense
-    FROM expenses
-    WHERE company_id = ?
-      AND expense_date <= ?
-");
-$stmt->bind_param("is", $company_id, $to_date);
-$stmt->execute();
-$res = $stmt->get_result();
-if ($row = $res->fetch_assoc()) {
-    $total_expense = (float)$row['total_expense'];
-}
-$stmt->close();
-
-$net_result = $total_income - $total_expense;
-$net_label  = $net_result >= 0 ? 'Accumulated Surplus' : 'Accumulated Deficit';
-
-/* =========================
-   LIABILITIES
-========================= */
+/* LIABILITIES */
 $liability_rows = [];
-$total_liabilities = 0;
+$total_liabilities = 0.00;
 
 $stmt = $conn->prepare("
-    SELECT liability_name, liability_type, liability_date, amount
+    SELECT liability_name, liability_type, liability_date, balance_amount AS amount
     FROM liabilities
     WHERE company_id = ?
       AND liability_date <= ?
@@ -226,17 +197,19 @@ while ($row = $res->fetch_assoc()) {
 }
 $stmt->close();
 
-/* =========================
-   FINAL BALANCE
-========================= */
+/* FINAL BALANCE */
 $left_total   = $total_assets + $cash_balance + $bank_balance;
 $equity       = $left_total - $total_liabilities;
 $equity_label = $equity >= 0 ? 'Accumulated Surplus' : 'Accumulated Deficit';
 $right_total  = $total_liabilities + $equity;
-
-$is_balanced = abs($left_total - $right_total) < 0.01;
+$is_balanced  = abs($left_total - $right_total) < 0.01;
 
 include 'includes/header.php';
+?>
+
+<script src="assets/js/html2pdf.bundle.min.js"></script>
+
+<?php
 include 'includes/sidebar.php';
 ?>
 
@@ -252,14 +225,7 @@ include 'includes/sidebar.php';
 
         <div class="topbar-right">
             <div class="company-pill"><?= e($_SESSION['company_name'] ?? 'Company') ?></div>
-            <div class="role-pill"><?= e($_SESSION['role'] ?? 'User') ?></div>
-            <div class="user-chip">
-                <div class="avatar"><?= e(strtoupper(substr($_SESSION['full_name'] ?? 'U', 0, 1))) ?></div>
-                <div class="meta">
-                    <strong><?= e($_SESSION['full_name'] ?? 'User') ?></strong>
-                    <span><?= e($_SESSION['email'] ?? '') ?></span>
-                </div>
-            </div>
+            <div class="role-pill"><?= e(ucfirst($currentRole)) ?></div>
         </div>
     </div>
 
@@ -267,8 +233,15 @@ include 'includes/sidebar.php';
         <div class="card no-print">
             <div class="card-header">
                 <h3>Report Filters</h3>
-                <div style="display:flex; gap:10px; flex-wrap:wrap;">
-                    <button type="button" onclick="window.print()" class="btn btn-primary">Print Report</button>
+
+                <div class="report-header" style="display:flex; gap:10px; align-items:center;">
+                    <button type="button" onclick="window.print()" class="btn btn-primary">
+                        🖨 Print
+                    </button>
+
+                    <button type="button" onclick="downloadPDF()" class="btn btn-secondary">
+                        ⬇ Download PDF
+                    </button>
                 </div>
             </div>
 
@@ -294,13 +267,13 @@ include 'includes/sidebar.php';
             </div>
         </div>
 
-        <div class="card print-card">
+        <div class="card print-card" id="printArea">
             <div class="card-body">
-                <div style="text-align:center; margin-bottom:28px;">
+                <div class="report-title">
                     <h2 style="margin-bottom:8px;">STATEMENT OF ASSETS & LIABILITIES</h2>
                     <h3 style="margin-bottom:6px;"><?= e($company['company_name'] ?? 'Company') ?></h3>
-                    <div style="margin-bottom:4px;">Registration No: <?= e($company['registration_no'] ?? '-') ?></div>
-                    <div style="margin-bottom:4px;">As at: <?= e($to_date) ?></div>
+                    <div class="report-period">Registration No: <?= e($company['registration_no'] ?? '-') ?></div>
+                    <div class="report-period">As at: <?= e($to_date) ?></div>
                 </div>
 
                 <div class="grid grid-3 no-print" style="margin-bottom:24px;">
@@ -310,17 +283,14 @@ include 'includes/sidebar.php';
                             <div class="stat-icon">📦</div>
                         </div>
                         <div class="stat-value">Rs. <?= number_format($left_total, 2) ?></div>
-                        <div class="stat-note">Left side of statement</div>
                     </div>
 
                     <div class="stat-card">
                         <div class="stat-top">
-                            <div class="stat-title">
-                                <?= $equity_label ?> + Liabilities</div>
+                            <div class="stat-title"><?= e($equity_label) ?> + Liabilities</div>
                             <div class="stat-icon">📉</div>
                         </div>
                         <div class="stat-value">Rs. <?= number_format($right_total, 2) ?></div>
-                        <div class="stat-note">Right side of statement</div>
                     </div>
 
                     <div class="stat-card">
@@ -329,24 +299,33 @@ include 'includes/sidebar.php';
                             <div class="stat-icon"><?= $is_balanced ? '✅' : '⚠️' ?></div>
                         </div>
                         <div class="stat-value"><?= $is_balanced ? 'Balanced' : 'Not Balanced' ?></div>
-                        <div class="stat-note">Final statement check</div>
                     </div>
                 </div>
 
                 <div class="table-wrap">
-                    <table class="table">
+                    <table class="table report-table">
                         <thead>
                             <tr>
-                                <th style="width:40%;">Assets</th>
-                                <th style="width:20%; text-align:right;">Amount (Rs.)</th>
-                                <th style="width:40%;">Capital / Liabilities</th>
-                                <th style="width:20%; text-align:right;">Amount (Rs.)</th>
+                                <th>Assets</th>
+                                <th class="amount">Amount (Rs.)</th>
+                                <th>Capital / Liabilities</th>
+                                <th class="amount">Amount (Rs.)</th>
                             </tr>
                         </thead>
                         <tbody>
                             <?php
-                            $right_items = [];
+                            $left_items = [];
+                            foreach ($asset_rows as $asset) {
+                                $left_items[] = [
+                                    'label' => $asset['name'] . ' (' . $asset['type'] . ')',
+                                    'amount' => $asset['amount']
+                                ];
+                            }
 
+                            $left_items[] = ['label' => 'Cash Balance', 'amount' => $cash_balance];
+                            $left_items[] = ['label' => 'Bank Balance', 'amount' => $bank_balance];
+
+                            $right_items = [];
                             $right_items[] = [
                                 'label' => $equity_label,
                                 'amount' => abs($equity)
@@ -359,21 +338,7 @@ include 'includes/sidebar.php';
                                 ];
                             }
 
-                            $left_items = [];
-                            foreach ($asset_rows as $asset) {
-                                $left_items[] = [
-                                    'label' => $asset['name'] . ' (' . $asset['type'] . ')',
-                                    'amount' => $asset['amount']
-                                ];
-                            }
-
-                            $left_items[] = ['label' => 'Cash Balance', 'amount' => $cash_balance];
-                            $left_items[] = ['label' => 'Bank Balance', 'amount' => $bank_balance];
-
                             $max_rows = max(count($left_items), count($right_items));
-                            if ($max_rows === 0) {
-                                $max_rows = 1;
-                            }
 
                             for ($i = 0; $i < $max_rows; $i++):
                             ?>
@@ -430,45 +395,60 @@ include 'includes/sidebar.php';
     </div>
 </div>
 
-<style>
-@media print {
-
-    .sidebar,
-    .topbar,
-    .menu-toggle,
-    .no-print,
-    .btn,
-    form {
-        display: none !important;
+<script>
+function downloadPDF() {
+    if (typeof html2pdf === 'undefined') {
+        alert('PDF library not loaded. Check: assets/js/html2pdf.bundle.min.js');
+        return;
     }
 
-    body,
-    .main-area,
-    .content,
-    .card,
-    .card-body {
-        margin: 0 !important;
-        padding: 0 !important;
-        background: #fff !important;
-        box-shadow: none !important;
+    const element = document.getElementById('printArea');
+
+    if (!element) {
+        alert('Report area not found.');
+        return;
     }
 
-    .print-card {
-        border: none !important;
-    }
+    document.body.classList.add('pdf-export-mode');
 
-    .table {
-        width: 100%;
-        border-collapse: collapse;
-    }
+    const options = {
+        margin: 0.25,
+        filename: 'assets_liabilities_report.pdf',
+        image: {
+            type: 'jpeg',
+            quality: 1
+        },
+        html2canvas: {
+            scale: 2,
+            useCORS: true,
+            scrollX: 0,
+            scrollY: 0,
+            windowWidth: 1120
+        },
+        jsPDF: {
+            unit: 'in',
+            format: 'a4',
+            orientation: 'landscape'
+        },
+        pagebreak: {
+            mode: ['avoid-all', 'css', 'legacy']
+        }
+    };
 
-    .table th,
-    .table td {
-        border: 1px solid #000 !important;
-        padding: 8px !important;
-        font-size: 12px !important;
-    }
+    setTimeout(function() {
+        html2pdf()
+            .set(options)
+            .from(element)
+            .save()
+            .then(function() {
+                document.body.classList.remove('pdf-export-mode');
+            })
+            .catch(function() {
+                document.body.classList.remove('pdf-export-mode');
+                alert('PDF generation failed.');
+            });
+    }, 300);
 }
-</style>
+</script>
 
 <?php include 'includes/footer.php'; ?>

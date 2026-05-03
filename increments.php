@@ -1,7 +1,12 @@
 <?php
+declare(strict_types=1);
+
 session_start();
 require_once 'config/db.php';
+require_once 'includes/functions.php';
 require_once 'includes/security.php';
+
+set_security_headers();
 
 if (!isset($_SESSION['user_id'])) {
     header("Location: login.php");

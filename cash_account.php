@@ -30,9 +30,9 @@ $msg = '';
 $msgType = 'success';
 
 $currentRole = verify_user_role($user_id, $company_id);
-$canView = in_array($currentRole, ['organization', 'auditor', 'accountant'], true);
-$canCrud = ($currentRole === 'accountant');
-
+$currentRole = normalize_role_value($currentRole);
+$canView = in_array($currentRole, ['organization', 'accountant', 'auditor'], true);
+$canCrud = $currentRole === 'accountant'; // Only accountant can CRUD
 if (!$canView) {
     header("Location: dashboard.php");
     exit;
@@ -234,26 +234,13 @@ $balance = $totalIn - $totalOut;
 
 include 'includes/header.php';
 include 'includes/sidebar.php';
+include 'includes/topbar.php';
 ?>
 
 <div class="main-area">
-    <div class="topbar">
-        <div class="topbar-left">
-            <button class="menu-toggle" id="menuToggle">☰</button>
-            <div class="page-heading">
-                <h1>Cash Account</h1>
-                <p><?= e($pageDescription) ?></p>
-            </div>
-        </div>
-        <div class="topbar-right">
-            <div class="company-pill"><?= e($_SESSION['company_name'] ?? 'Company') ?></div>
-            <div class="role-pill"><?= e($_SESSION['role'] ?? 'User') ?></div>
-        </div>
-    </div>
-
     <div class="content">
         <?php if ($msg !== ''): ?>
-            <div class="alert alert-<?= e($msgType) ?>"><?= e($msg) ?></div>
+        <div class="alert alert-<?= e($msgType) ?>"><?= e($msg) ?></div>
         <?php endif; ?>
 
         <div class="grid grid-3">
@@ -281,59 +268,59 @@ include 'includes/sidebar.php';
         </div>
 
         <?php if ($canCrud): ?>
-            <div class="card mt-24">
-                <div class="card-header">
-                    <h3><?= $edit_mode ? 'Edit Cash Transaction' : 'Add Cash Transaction' ?></h3>
-                    <span class="badge badge-primary">Cash Ledger Entry</span>
-                </div>
-                <div class="card-body">
-                    <form method="POST">
-                        <?= csrf_field() ?>
-                        <input type="hidden" name="cash_id" value="<?= e($edit['cash_id']) ?>">
-
-                        <div class="form-grid">
-                            <div class="form-group">
-                                <label class="form-label">Transaction Date</label>
-                                <input type="date" name="transaction_date" class="form-control"
-                                    value="<?= e($edit['transaction_date']) ?>" required>
-                            </div>
-
-                            <div class="form-group">
-                                <label class="form-label">Transaction Type</label>
-                                <select name="transaction_type" class="form-control" required>
-                                    <option value="">Select Type</option>
-                                    <option value="Cash In"
-                                        <?= ($edit['transaction_type'] ?? '') === 'Cash In' ? 'selected' : '' ?>>Cash In
-                                    </option>
-                                    <option value="Cash Out"
-                                        <?= ($edit['transaction_type'] ?? '') === 'Cash Out' ? 'selected' : '' ?>>Cash Out
-                                    </option>
-                                </select>
-                            </div>
-
-                            <div class="form-group">
-                                <label class="form-label">Amount</label>
-                                <input type="number" step="0.01" name="amount" class="form-control"
-                                    value="<?= e($edit['amount']) ?>" required>
-                            </div>
-
-                            <div class="form-group full">
-                                <label class="form-label">Description</label>
-                                <textarea name="description" class="form-control"
-                                    required><?= e($edit['description']) ?></textarea>
-                            </div>
-
-                            <div class="form-group full">
-                                <button type="submit" name="save_cash"
-                                    class="btn btn-primary"><?= $edit_mode ? 'Update Cash Entry' : 'Save Cash Entry' ?></button>
-                                <?php if ($edit_mode): ?>
-                                    <a href="cash_account.php" class="btn btn-light">Cancel</a>
-                                <?php endif; ?>
-                            </div>
-                        </div>
-                    </form>
-                </div>
+        <div class="card mt-24">
+            <div class="card-header">
+                <h3><?= $edit_mode ? 'Edit Cash Transaction' : 'Add Cash Transaction' ?></h3>
+                <span class="badge badge-primary">Cash Ledger Entry</span>
             </div>
+            <div class="card-body">
+                <form method="POST">
+                    <?= csrf_field() ?>
+                    <input type="hidden" name="cash_id" value="<?= e($edit['cash_id']) ?>">
+
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label class="form-label">Transaction Date</label>
+                            <input type="date" name="transaction_date" class="form-control"
+                                value="<?= e($edit['transaction_date']) ?>" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">Transaction Type</label>
+                            <select name="transaction_type" class="form-control" required>
+                                <option value="">Select Type</option>
+                                <option value="Cash In"
+                                    <?= ($edit['transaction_type'] ?? '') === 'Cash In' ? 'selected' : '' ?>>Cash In
+                                </option>
+                                <option value="Cash Out"
+                                    <?= ($edit['transaction_type'] ?? '') === 'Cash Out' ? 'selected' : '' ?>>Cash Out
+                                </option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">Amount</label>
+                            <input type="number" step="0.01" name="amount" class="form-control"
+                                value="<?= e($edit['amount']) ?>" required>
+                        </div>
+
+                        <div class="form-group full">
+                            <label class="form-label">Description</label>
+                            <textarea name="description" class="form-control"
+                                required><?= e($edit['description']) ?></textarea>
+                        </div>
+
+                        <div class="form-group full">
+                            <button type="submit" name="save_cash"
+                                class="btn btn-primary"><?= $edit_mode ? 'Update Cash Entry' : 'Save Cash Entry' ?></button>
+                            <?php if ($edit_mode): ?>
+                            <a href="cash_account.php" class="btn btn-light">Cancel</a>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
         <?php endif; ?>
 
         <div class="card mt-24">
@@ -356,35 +343,35 @@ include 'includes/sidebar.php';
                         </thead>
                         <tbody>
                             <?php if ($rows): ?>
-                                <?php foreach ($rows as $row): ?>
-                                    <tr>
-                                        <td><?= e($row['cash_id']) ?></td>
-                                        <td><?= e($row['transaction_date']) ?></td>
-                                        <td><?= e($row['description']) ?></td>
-                                        <td>
-                                            <?php $cls = ($row['transaction_type'] === 'Cash In') ? 'badge-success' : 'badge-danger'; ?>
-                                            <span class="badge <?= e($cls) ?>"><?= e($row['transaction_type']) ?></span>
-                                        </td>
-                                        <td>Rs. <?= number_format((float)$row['amount'], 2) ?></td>
-                                        <td>
-                                            <?php if ($canCrud): ?>
-                                                <a class="btn btn-light" href="?edit=<?= (int)$row['cash_id'] ?>">Edit</a>
-                                                <form method="POST" style="display:inline-block;"
-                                                    onsubmit="return confirm('Delete this cash entry?')">
-                                                    <?= csrf_field() ?>
-                                                    <input type="hidden" name="cash_id" value="<?= (int)$row['cash_id'] ?>">
-                                                    <button type="submit" name="delete_cash" class="btn btn-danger">Delete</button>
-                                                </form>
-                                            <?php else: ?>
-                                                <span class="text-muted">View Only</span>
-                                            <?php endif; ?>
-                                        </td>
-                                    </tr>
-                                <?php endforeach; ?>
+                            <?php foreach ($rows as $row): ?>
+                            <tr>
+                                <td><?= e($row['cash_id']) ?></td>
+                                <td><?= e($row['transaction_date']) ?></td>
+                                <td><?= e($row['description']) ?></td>
+                                <td>
+                                    <?php $cls = ($row['transaction_type'] === 'Cash In') ? 'badge-success' : 'badge-danger'; ?>
+                                    <span class="badge <?= e($cls) ?>"><?= e($row['transaction_type']) ?></span>
+                                </td>
+                                <td>Rs. <?= number_format((float)$row['amount'], 2) ?></td>
+                                <td>
+                                    <?php if ($canCrud): ?>
+                                    <a class="btn btn-light" href="?edit=<?= (int)$row['cash_id'] ?>">Edit</a>
+                                    <form method="POST" class="inline-form"
+                                        onsubmit="return confirm('Delete this cash entry?')">
+                                        <?= csrf_field() ?>
+                                        <input type="hidden" name="cash_id" value="<?= (int)$row['cash_id'] ?>">
+                                        <button type="submit" name="delete_cash" class="btn btn-danger">Delete</button>
+                                    </form>
+                                    <?php else: ?>
+                                    <span class="text-muted">View Only</span>
+                                    <?php endif; ?>
+                                </td>
+                            </tr>
+                            <?php endforeach; ?>
                             <?php else: ?>
-                                <tr>
-                                    <td colspan="6">No cash transactions found.</td>
-                                </tr>
+                            <tr>
+                                <td colspan="6">No cash transactions found.</td>
+                            </tr>
                             <?php endif; ?>
                         </tbody>
                     </table>

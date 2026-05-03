@@ -1,128 +1,172 @@
-document.addEventListener("DOMContentLoaded", function () {
-  const sidebar = document.getElementById("sidebar");
-  const overlay = document.getElementById("sidebarOverlay");
-  const toggleBtn = document.getElementById("menuToggle");
+(function () {
+  const BREAKPOINT = 1200;
 
-  function openSidebar() {
-    if (sidebar) {
-      sidebar.classList.add("show");
-      sidebar.style.transform = "translateX(0)";
-    }
-    if (overlay) {
-      overlay.classList.add("show");
-      overlay.style.opacity = "1";
-      overlay.style.visibility = "visible";
-    }
-    document.body.style.overflow = "hidden";
+  function getElements() {
+    return {
+      sidebar: document.getElementById("sidebar"),
+      overlay: document.getElementById("sidebarOverlay"),
+      toggleBtn: document.getElementById("sidebarToggle"),
+    };
   }
 
-  function closeSidebar() {
-    if (sidebar) {
-      sidebar.classList.remove("show");
-      sidebar.style.transform = "translateX(-100%)";
-    }
-    if (overlay) {
-      overlay.classList.remove("show");
-      overlay.style.opacity = "0";
-      overlay.style.visibility = "hidden";
-    }
-    document.body.style.overflow = "";
+  function isMobileLayout() {
+    return window.innerWidth <= BREAKPOINT;
   }
 
-  // Toggle button functionality
-  if (toggleBtn) {
-    toggleBtn.addEventListener("click", function (e) {
-      e.preventDefault();
-      e.stopPropagation();
-      if (sidebar && sidebar.classList.contains("show")) {
-        closeSidebar();
-      } else {
-        openSidebar();
-      }
-    });
-  }
+  window.openSidebar = function () {
+    const { sidebar, overlay } = getElements();
+    if (!sidebar || !overlay) return;
 
-  // Overlay click to close sidebar
-  if (overlay) {
-    overlay.addEventListener("click", function (e) {
-      e.preventDefault();
-      closeSidebar();
-    });
-  }
+    sidebar.classList.add("show");
+    overlay.classList.add("show");
+    document.body.classList.add("sidebar-open");
+  };
 
-  // Close sidebar when clicking on a menu link (mobile)
-  document.querySelectorAll("#sidebar a").forEach(function (link) {
-    link.addEventListener("click", function () {
-      if (window.innerWidth <= 900) {
-        closeSidebar();
-      }
-    });
-  });
+  window.closeSidebar = function () {
+    const { sidebar, overlay } = getElements();
+    if (!sidebar || !overlay) return;
 
-  // Close sidebar on window resize if width exceeds threshold
-  window.addEventListener("resize", function () {
-    if (window.innerWidth > 900) {
-      closeSidebar();
+    sidebar.classList.remove("show");
+    overlay.classList.remove("show");
+    document.body.classList.remove("sidebar-open");
+  };
+
+  window.toggleSidebar = function () {
+    const { sidebar } = getElements();
+    if (!sidebar) return;
+
+    if (sidebar.classList.contains("show")) {
+      window.closeSidebar();
+    } else {
+      window.openSidebar();
     }
-  });
+  };
 
-  // Prevent sidebar closing on link clicks inside sidebar (for dropdowns, etc)
-  const sidebarMenu = document.querySelector(".sidebar-menu");
-  if (sidebarMenu) {
-    sidebarMenu.addEventListener("click", function (e) {
-      if (e.target !== e.currentTarget) {
+  document.addEventListener("DOMContentLoaded", function () {
+    const { sidebar, overlay, toggleBtn } = getElements();
+
+    if (toggleBtn) {
+      toggleBtn.addEventListener("click", function (e) {
+        e.preventDefault();
         e.stopPropagation();
-      }
+        window.toggleSidebar();
+      });
+    }
+
+    if (overlay) {
+      overlay.addEventListener("click", function () {
+        window.closeSidebar();
+      });
+    }
+
+    document.querySelectorAll("#sidebar a").forEach(function (link) {
+      link.addEventListener("click", function () {
+        if (isMobileLayout()) {
+          window.closeSidebar();
+        }
+      });
     });
-  }
 
-  // Password toggle functionality
-  const passwordToggles = document.querySelectorAll("[data-toggle-password]");
-
-  passwordToggles.forEach(function (btn) {
-    btn.addEventListener("click", function (e) {
-      e.preventDefault();
-      e.stopPropagation();
-
-      const inputId = this.getAttribute("data-toggle-password");
-      const input = document.getElementById(inputId);
-
-      if (!input) {
-        console.warn("Password input element not found:", inputId);
-        return;
-      }
-
-      const icon = this.querySelector(".eye-icon");
-
-      if (input.type === "password") {
-        input.type = "text";
-        if (icon) icon.textContent = "🙈";
-        this.setAttribute("aria-pressed", "true");
-        this.setAttribute("title", "Hide password");
-      } else {
-        input.type = "password";
-        if (icon) icon.textContent = "👁";
-        this.setAttribute("aria-pressed", "false");
-        this.setAttribute("title", "Show password");
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") {
+        window.closeSidebar();
       }
     });
 
-    // Keyboard support for password toggle (Spacebar or Enter)
-    btn.addEventListener("keydown", function (e) {
-      if (e.key === " " || e.key === "Enter") {
+    window.addEventListener("resize", function () {
+      if (!isMobileLayout()) {
+        window.closeSidebar();
+      }
+    });
+
+    document.querySelectorAll("[data-toggle-password]").forEach(function (btn) {
+      btn.addEventListener("click", function (e) {
         e.preventDefault();
-        this.click();
+
+        const inputId = this.getAttribute("data-toggle-password");
+        const input = document.getElementById(inputId);
+        const icon = this.querySelector(".eye-icon");
+
+        if (!input) return;
+
+        input.type = input.type === "password" ? "text" : "password";
+
+        if (icon) {
+          icon.textContent = input.type === "password" ? "👁" : "🙈";
+        }
+
+        this.setAttribute(
+          "title",
+          input.type === "password" ? "Show password" : "Hide password",
+        );
+      });
+    });
+
+    // Notification functions
+    window.toggleNotifications = function () {
+      const dropdown = document.getElementById("notificationDropdown");
+      if (dropdown) {
+        dropdown.style.display =
+          dropdown.style.display === "block" ? "none" : "block";
+      }
+    };
+
+    window.markAsRead = function (notificationId, url) {
+      // Mark as read via AJAX
+      fetch("mark_notification_read.php", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body:
+          "notification_id=" +
+          notificationId +
+          "&csrf_token=" +
+          encodeURIComponent(
+            document.querySelector('input[name="csrf_token"]')?.value || "",
+          ),
+      })
+        .then((response) => response.json())
+        .then((data) => {
+          if (data.success) {
+            // Update UI
+            const item = document.querySelector(
+              '.notification-item[onclick*="markAsRead(' +
+                notificationId +
+                '"]',
+            );
+            if (item) {
+              item.classList.remove("unread");
+            }
+            // Update badge count
+            const badge = document.querySelector(".notification-count");
+            if (badge) {
+              const current = parseInt(badge.textContent) || 0;
+              if (current > 1) {
+                badge.textContent = current - 1;
+              } else {
+                badge.remove();
+              }
+            }
+          }
+        })
+        .catch((error) =>
+          console.error("Error marking notification as read:", error),
+        );
+
+      // Navigate to URL
+      if (url) {
+        window.location.href = url;
+      }
+    };
+
+    // Close dropdown when clicking outside
+    document.addEventListener("click", function (e) {
+      const container = document.querySelector(".notification-container");
+      const dropdown = document.getElementById("notificationDropdown");
+      if (container && dropdown && !container.contains(e.target)) {
+        dropdown.style.display = "none";
       }
     });
   });
-
-  // Prevent form submission on password toggle button click
-  document.querySelectorAll(".password-toggle").forEach(function (btn) {
-    btn.addEventListener("click", function (e) {
-      if (e.button === 0) {
-        e.preventDefault();
-        return false;
-      }
-    });
-  });
-});
+})();

@@ -2,6 +2,8 @@
 session_start();
 require_once 'config/db.php';
 require_once 'includes/security.php';
+require_once 'includes/functions.php';
+require_once 'includes/password_validator.php';
 
 set_security_headers();
 
@@ -181,7 +183,7 @@ include 'includes/sidebar.php';
                                 <div class="stat-title">Recommendation</div>
                                 <div class="stat-icon">🛡️</div>
                             </div>
-                            <div class="stat-value" style="font-size:20px;">Strong Password</div>
+                            <div class="stat-value stat-value-small">Strong Password</div>
                             <div class="stat-note">Use letters, numbers, and symbols</div>
                         </div>
 
@@ -190,7 +192,7 @@ include 'includes/sidebar.php';
                                 <div class="stat-title">Security</div>
                                 <div class="stat-icon">✅</div>
                             </div>
-                            <div class="stat-value" style="font-size:20px;">Protected</div>
+                            <div class="stat-value stat-value-small">Protected</div>
                             <div class="stat-note">Passwords are stored hashed</div>
                         </div>
                     </div>

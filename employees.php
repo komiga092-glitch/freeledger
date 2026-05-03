@@ -30,9 +30,10 @@ $msgType = 'success';
 $edit_mode = false;
 
 $currentRole = verify_user_role($user_id, $company_id);
+$currentRole = normalize_role_value($currentRole);
 
-$canView = in_array($currentRole, ['organization', 'auditor', 'accountant'], true);
-$canCrud = ($currentRole === 'accountant');
+$canView = in_array($currentRole, ['organization', 'accountant', 'auditor'], true);
+$canCrud = $currentRole === 'accountant'; // Only accountant can CRUD
 
 if (!$canView) {
     header("Location: dashboard.php");
@@ -42,15 +43,27 @@ if (!$canView) {
 function resetEmployeeForm(): array
 {
     return [
-        'employee_id' => '',
+        'employee_id'   => '',
         'employee_name' => '',
-        'nic' => '',
-        'phone' => '',
-        'email' => '',
-        'position' => '',
-        'basic_salary' => '',
-        'join_date' => ''
+        'nic'           => '',
+        'phone'         => '',
+        'email'         => '',
+        'position'      => '',
+        'basic_salary'  => '',
+        'increment'     => '0.00',
+        'total_salary'  => '0.00',
+        'join_date'     => ''
     ];
+}
+
+function isValidDateString(string $date): bool
+{
+    if ($date === '') {
+        return true;
+    }
+
+    $d = DateTime::createFromFormat('Y-m-d', $date);
+    return $d instanceof DateTime && $d->format('Y-m-d') === $date;
 }
 
 $edit = resetEmployeeForm();
@@ -61,54 +74,68 @@ $edit = resetEmployeeForm();
 if (isset($_GET['edit'])) {
     $employee_id = (int)($_GET['edit'] ?? 0);
 
-    $stmt = $conn->prepare("
-        SELECT
-            employee_id,
-            employee_name,
-            nic,
-            phone,
-            email,
-            position,
-            basic_salary,
-            join_date
-        FROM employees
-        WHERE company_id = ? AND employee_id = ?
-        LIMIT 1
-    ");
+    if ($employee_id > 0) {
+        $stmt = $conn->prepare("
+            SELECT
+                employee_id,
+                employee_name,
+                nic,
+                phone,
+                email,
+                position,
+                basic_salary,
+                increment,
+                total_salary,
+                join_date
+            FROM employees
+            WHERE company_id = ? AND employee_id = ?
+            LIMIT 1
+        ");
 
-    if ($stmt) {
-        $stmt->bind_param("ii", $company_id, $employee_id);
-        $stmt->execute();
+        if ($stmt) {
+            $stmt->bind_param("ii", $company_id, $employee_id);
+            $stmt->execute();
 
-        $stmt->bind_result(
-            $edit_employee_id,
-            $edit_employee_name,
-            $edit_nic,
-            $edit_phone,
-            $edit_email,
-            $edit_position,
-            $edit_basic_salary,
-            $edit_join_date
-        );
+            $stmt->bind_result(
+                $edit_employee_id,
+                $edit_employee_name,
+                $edit_nic,
+                $edit_phone,
+                $edit_email,
+                $edit_position,
+                $edit_basic_salary,
+                $edit_increment,
+                $edit_total_salary,
+                $edit_join_date
+            );
 
-        if ($stmt->fetch()) {
-            $edit = [
-                'employee_id'   => $edit_employee_id,
-                'employee_name' => $edit_employee_name,
-                'nic'           => $edit_nic,
-                'phone'         => $edit_phone,
-                'email'         => $edit_email,
-                'position'      => $edit_position,
-                'basic_salary'  => $edit_basic_salary,
-                'join_date'     => $edit_join_date
-            ];
-            $edit_mode = true;
+            if ($stmt->fetch()) {
+                $edit = [
+                    'employee_id'   => (string)$edit_employee_id,
+                    'employee_name' => $edit_employee_name ?? '',
+                    'nic'           => $edit_nic ?? '',
+                    'phone'         => $edit_phone ?? '',
+                    'email'         => $edit_email ?? '',
+                    'position'      => $edit_position ?? '',
+                    'basic_salary'  => number_format((float)$edit_basic_salary, 2, '.', ''),
+                    'increment'     => number_format((float)$edit_increment, 2, '.', ''),
+                    'total_salary'  => number_format((float)$edit_total_salary, 2, '.', ''),
+                    'join_date'     => $edit_join_date ?? ''
+                ];
+                $edit_mode = true;
+            } else {
+                $msg = 'Employee record not found.';
+                $msgType = 'warning';
+            }
+
+            $stmt->close();
+        } else {
+            $msg = 'Failed to prepare employee edit query.';
+            $msgType = 'danger';
         }
-
-        $stmt->close();
     }
 }
- 
+
 /* =========================
    ADD / UPDATE EMPLOYEE
 ========================= */
@@ -127,67 +154,205 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_employee'])) {
         $email         = trim($_POST['email'] ?? '');
         $position      = trim($_POST['position'] ?? '');
         $basic_salary  = (float)($_POST['basic_salary'] ?? 0);
+        $increment     = (float)($_POST['increment'] ?? 0);
         $join_date     = trim($_POST['join_date'] ?? '');
 
-        if ($employee_name === '') {
+        $allowSave = true;
+
+        /* Preserve form values on validation failure */
+        $edit = [
+            'employee_id'   => (string)$employee_id,
+            'employee_name' => $employee_name,
+            'nic'           => $nic,
+            'phone'         => $phone,
+            'email'         => $email,
+            'position'      => $position,
+            'basic_salary'  => number_format($basic_salary, 2, '.', ''),
+            'increment'     => number_format($increment, 2, '.', ''),
+            'total_salary'  => number_format($basic_salary + $increment, 2, '.', ''),
+            'join_date'     => $join_date
+        ];
+        $edit_mode = ($employee_id > 0);
+
+        /* On update, do not allow basic salary modification from form */
+        if ($employee_id > 0) {
+            $stmt = $conn->prepare("
+                SELECT basic_salary
+                FROM employees
+                WHERE company_id = ? AND employee_id = ?
+                LIMIT 1
+            ");
+
+            if ($stmt) {
+                $stmt->bind_param("ii", $company_id, $employee_id);
+                $stmt->execute();
+                $stmt->bind_result($existing_basic_salary);
+
+                if ($stmt->fetch()) {
+                    $basic_salary = (float)$existing_basic_salary;
+                    $edit['basic_salary'] = number_format($basic_salary, 2, '.', '');
+                } else {
+                    $msg = 'Employee record not found for update.';
+                    $msgType = 'danger';
+                    $allowSave = false;
+                }
+
+                $stmt->close();
+            } else {
+                $msg = 'Failed to validate employee update.';
+                $msgType = 'danger';
+                $allowSave = false;
+            }
+        }
+
+        $total_salary = $basic_salary + $increment;
+        $edit['total_salary'] = number_format($total_salary, 2, '.', '');
+
+        /* Validations */
+        if (!$allowSave) {
+            // keep previous error
+        } elseif ($employee_name === '') {
             $msg = 'Employee name is required.';
             $msgType = 'danger';
-        } elseif ($employee_id <= 0 && $basic_salary < 0) {
-            $msg = 'Basic salary cannot be negative.';
+        } elseif (mb_strlen($employee_name) < 2 || mb_strlen($employee_name) > 150) {
+            $msg = 'Employee name must be between 2 and 150 characters.';
+            $msgType = 'danger';
+        } elseif ($nic !== '' && mb_strlen($nic) > 20) {
+            $msg = 'NIC is too long.';
+            $msgType = 'danger';
+        } elseif ($phone !== '' && !preg_match('/^[0-9+\-\s]{7,20}$/', $phone)) {
+            $msg = 'Please enter a valid phone number.';
             $msgType = 'danger';
         } elseif ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
             $msg = 'Please enter a valid email address.';
             $msgType = 'danger';
+        } elseif ($position !== '' && mb_strlen($position) > 100) {
+            $msg = 'Position is too long.';
+            $msgType = 'danger';
+        } elseif ($basic_salary < 0) {
+            $msg = 'Basic salary cannot be negative.';
+            $msgType = 'danger';
+        } elseif ($increment < 0) {
+            $msg = 'Increment cannot be negative.';
+            $msgType = 'danger';
+        } elseif ($total_salary < 0) {
+            $msg = 'Total salary cannot be negative.';
+            $msgType = 'danger';
+        } elseif (!isValidDateString($join_date)) {
+            $msg = 'Please enter a valid join date.';
+            $msgType = 'danger';
         } else {
-            if ($employee_id > 0) {
-                $stmt = $conn->prepare("
-                    UPDATE employees
-                    SET employee_name = ?, nic = ?, phone = ?, email = ?, position = ?, join_date = ?
-                    WHERE company_id = ? AND employee_id = ?
-                ");
-
-                if (!$stmt) {
-                    $msg = 'Failed to prepare update query.';
-                    $msgType = 'danger';
+            /* Optional duplicate email check within same company */
+            if ($email !== '') {
+                if ($employee_id > 0) {
+                    $dup = $conn->prepare("
+                        SELECT employee_id
+                        FROM employees
+                        WHERE company_id = ? AND email = ? AND employee_id <> ?
+                        LIMIT 1
+                    ");
+                    if ($dup) {
+                        $dup->bind_param("isi", $company_id, $email, $employee_id);
+                    }
                 } else {
-                    $stmt->bind_param(
-                        "ssssssii",
-                        $employee_name,
-                        $nic,
-                        $phone,
-                        $email,
-                        $position,
-                        $join_date,
-                        $company_id,
-                        $employee_id
-                    );
+                    $dup = $conn->prepare("
+                        SELECT employee_id
+                        FROM employees
+                        WHERE company_id = ? AND email = ?
+                        LIMIT 1
+                    ");
+                    if ($dup) {
+                        $dup->bind_param("is", $company_id, $email);
+                    }
+                }
 
-                    if ($stmt->execute()) {
-                        if ($stmt->affected_rows >= 0) {
-                            $msg = 'Employee updated successfully.';
-                            $msgType = 'success';
-                            $edit_mode = false;
-                            $edit = resetEmployeeForm();
-                        } else {
-                            $msg = 'No changes were made.';
-                            $msgType = 'warning';
-                        }
-                    } else {
-                        $msg = 'Failed to update employee.';
+                if (!empty($dup) && $dup instanceof mysqli_stmt) {
+                    $dup->execute();
+                    $dup->store_result();
+
+                    if ($dup->num_rows > 0) {
+                        $msg = 'This email is already used by another employee in this company.';
                         $msgType = 'danger';
+                        $allowSave = false;
                     }
 
-                    $stmt->close();
-                }
-            } else {
-                if ($basic_salary < 0) {
-                    $msg = 'Basic salary cannot be negative.';
+                    $dup->close();
+                } elseif ($allowSave) {
+                    $msg = 'Failed to validate employee email.';
                     $msgType = 'danger';
+                    $allowSave = false;
+                }
+            }
+
+            if ($allowSave) {
+                if ($employee_id > 0) {
+                    $stmt = $conn->prepare("
+                        UPDATE employees
+                        SET
+                            employee_name = ?,
+                            nic = ?,
+                            phone = ?,
+                            email = ?,
+                            position = ?,
+                            basic_salary = ?,
+                            increment = ?,
+                            total_salary = ?,
+                            join_date = ?
+                        WHERE company_id = ? AND employee_id = ?
+                    ");
+
+                    if (!$stmt) {
+                        $msg = 'Failed to prepare update query.';
+                        $msgType = 'danger';
+                    } else {
+                        $stmt->bind_param(
+                            "sssssdddssi",
+                            $employee_name,
+                            $nic,
+                            $phone,
+                            $email,
+                            $position,
+                            $basic_salary,
+                            $increment,
+                            $total_salary,
+                            $join_date,
+                            $company_id,
+                            $employee_id
+                        );
+
+                        if ($stmt->execute()) {
+                            if ($stmt->affected_rows > 0) {
+                                $msg = 'Employee updated successfully.';
+                                $msgType = 'success';
+                                $edit_mode = false;
+                                $edit = resetEmployeeForm();
+                            } else {
+                                $msg = 'No changes were made.';
+                                $msgType = 'warning';
+                            }
+                        } else {
+                            $msg = 'Failed to update employee.';
+                            $msgType = 'danger';
+                        }
+
+                        $stmt->close();
+                    }
                 } else {
                     $stmt = $conn->prepare("
                         INSERT INTO employees
-                        (company_id, employee_name, nic, phone, email, position, basic_salary, join_date)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        (
+                            company_id,
+                            employee_name,
+                            nic,
+                            phone,
+                            email,
+                            position,
+                            basic_salary,
+                            increment,
+                            total_salary,
+                            join_date
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ");
 
                     if (!$stmt) {
@@ -195,7 +360,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_employee'])) {
                         $msgType = 'danger';
                     } else {
                         $stmt->bind_param(
-                            "isssssds",
+                            "isssssddds",
                             $company_id,
                             $employee_name,
                             $nic,
@@ -203,12 +368,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_employee'])) {
                             $email,
                             $position,
                             $basic_salary,
+                            $increment,
+                            $total_salary,
                             $join_date
                         );
 
                         if ($stmt->execute()) {
                             $msg = 'Employee added successfully.';
                             $msgType = 'success';
+                            $edit_mode = false;
                             $edit = resetEmployeeForm();
                         } else {
                             $msg = 'Failed to add employee.';
@@ -236,32 +404,63 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_employee'])) {
     } else {
         $employee_id = (int)($_POST['employee_id'] ?? 0);
 
-        if ($employee_id > 0) {
-            $stmt = $conn->prepare("
-                DELETE FROM employees
+        if ($employee_id <= 0) {
+            $msg = 'Invalid employee selected.';
+            $msgType = 'danger';
+        } else {
+            /* Prevent delete if salary records exist */
+            $checkStmt = $conn->prepare("
+                SELECT COUNT(*)
+                FROM salaries
                 WHERE company_id = ? AND employee_id = ?
             ");
 
-            if (!$stmt) {
-                $msg = 'Failed to prepare delete query.';
+            if (!$checkStmt) {
+                $msg = 'Failed to validate employee deletion.';
                 $msgType = 'danger';
             } else {
-                $stmt->bind_param("ii", $company_id, $employee_id);
+                $checkStmt->bind_param("ii", $company_id, $employee_id);
+                $checkStmt->execute();
+                $checkStmt->bind_result($salaryCount);
+                $checkStmt->fetch();
+                $checkStmt->close();
 
-                if ($stmt->execute()) {
-                    $msg = 'Employee deleted successfully.';
-                    $msgType = 'success';
-
-                    if ($edit_mode && (int)$edit['employee_id'] === $employee_id) {
-                        $edit_mode = false;
-                        $edit = resetEmployeeForm();
-                    }
+                if ((int)$salaryCount > 0) {
+                    $msg = 'This employee cannot be deleted because salary records already exist.';
+                    $msgType = 'warning';
                 } else {
-                    $msg = 'Delete failed.';
-                    $msgType = 'danger';
-                }
+                    $stmt = $conn->prepare("
+                        DELETE FROM employees
+                        WHERE company_id = ? AND employee_id = ?
+                    ");
 
-                $stmt->close();
+                    if (!$stmt) {
+                        $msg = 'Failed to prepare delete query.';
+                        $msgType = 'danger';
+                    } else {
+                        $stmt->bind_param("ii", $company_id, $employee_id);
+
+                        if ($stmt->execute()) {
+                            if ($stmt->affected_rows > 0) {
+                                $msg = 'Employee deleted successfully.';
+                                $msgType = 'success';
+
+                                if ($edit_mode && (int)$edit['employee_id'] === $employee_id) {
+                                    $edit_mode = false;
+                                    $edit = resetEmployeeForm();
+                                }
+                            } else {
+                                $msg = 'Employee not found or already deleted.';
+                                $msgType = 'warning';
+                            }
+                        } else {
+                            $msg = 'Delete failed.';
+                            $msgType = 'danger';
+                        }
+
+                        $stmt->close();
+                    }
+                }
             }
         }
     }
@@ -281,6 +480,8 @@ $stmt = $conn->prepare("
         email,
         position,
         basic_salary,
+        increment,
+        total_salary,
         join_date
     FROM employees
     WHERE company_id = ?
@@ -299,19 +500,23 @@ if ($stmt) {
         $row_email,
         $row_position,
         $row_basic_salary,
+        $row_increment,
+        $row_total_salary,
         $row_join_date
     );
 
     while ($stmt->fetch()) {
         $rows[] = [
             'employee_id'   => $row_employee_id,
-            'employee_name' => $row_employee_name,
-            'nic'           => $row_nic,
-            'phone'         => $row_phone,
-            'email'         => $row_email,
-            'position'      => $row_position,
-            'basic_salary'  => $row_basic_salary,
-            'join_date'     => $row_join_date
+            'employee_name' => $row_employee_name ?? '',
+            'nic'           => $row_nic ?? '',
+            'phone'         => $row_phone ?? '',
+            'email'         => $row_email ?? '',
+            'position'      => $row_position ?? '',
+            'basic_salary'  => (float)$row_basic_salary,
+            'increment'     => (float)$row_increment,
+            'total_salary'  => (float)$row_total_salary,
+            'join_date'     => $row_join_date ?? ''
         ];
     }
 
@@ -320,31 +525,10 @@ if ($stmt) {
 
 include 'includes/header.php';
 include 'includes/sidebar.php';
+include 'includes/topbar.php';
 ?>
 
 <div class="main-area">
-    <div class="topbar">
-        <div class="topbar-left">
-            <button class="menu-toggle" id="menuToggle">☰</button>
-            <div class="page-heading">
-                <h1>Employees</h1>
-                <p><?= e($pageDescription) ?></p>
-            </div>
-        </div>
-
-        <div class="topbar-right">
-            <div class="company-pill"><?= e($_SESSION['company_name'] ?? 'Company') ?></div>
-            <div class="role-pill"><?= e($_SESSION['role'] ?? 'User') ?></div>
-            <div class="user-chip">
-                <div class="avatar"><?= e(strtoupper(substr($_SESSION['full_name'] ?? 'U', 0, 1))) ?></div>
-                <div class="meta">
-                    <strong><?= e($_SESSION['full_name'] ?? 'User') ?></strong>
-                    <span><?= e($_SESSION['email'] ?? '') ?></span>
-                </div>
-            </div>
-        </div>
-    </div>
-
     <div class="content">
         <?php if ($msg !== ''): ?>
         <div class="alert alert-<?= e($msgType) ?>"><?= e($msg) ?></div>
@@ -366,33 +550,50 @@ include 'includes/sidebar.php';
                         <div class="form-group">
                             <label class="form-label">Employee Name</label>
                             <input type="text" name="employee_name" class="form-control"
-                                value="<?= e($edit['employee_name']) ?>" required>
+                                value="<?= e($edit['employee_name']) ?>" maxlength="150" required>
                         </div>
 
                         <div class="form-group">
                             <label class="form-label">NIC</label>
-                            <input type="text" name="nic" class="form-control" value="<?= e($edit['nic']) ?>">
+                            <input type="text" name="nic" class="form-control" value="<?= e($edit['nic']) ?>"
+                                maxlength="20">
                         </div>
 
                         <div class="form-group">
                             <label class="form-label">Phone</label>
-                            <input type="text" name="phone" class="form-control" value="<?= e($edit['phone']) ?>">
+                            <input type="text" name="phone" class="form-control" value="<?= e($edit['phone']) ?>"
+                                maxlength="20">
                         </div>
 
                         <div class="form-group">
                             <label class="form-label">Email</label>
-                            <input type="email" name="email" class="form-control" value="<?= e($edit['email']) ?>">
+                            <input type="email" name="email" class="form-control" value="<?= e($edit['email']) ?>"
+                                maxlength="255">
                         </div>
 
                         <div class="form-group">
                             <label class="form-label">Position</label>
-                            <input type="text" name="position" class="form-control" value="<?= e($edit['position']) ?>">
+                            <input type="text" name="position" class="form-control" value="<?= e($edit['position']) ?>"
+                                maxlength="100">
                         </div>
 
                         <div class="form-group">
                             <label class="form-label">Basic Salary</label>
                             <input type="number" step="0.01" min="0" name="basic_salary" class="form-control"
-                                value="<?= e($edit['basic_salary']) ?>" required>
+                                value="<?= e((string)$edit['basic_salary']) ?>"
+                                <?= $edit_mode ? 'readonly' : 'required' ?>>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">Increment</label>
+                            <input type="number" step="0.01" min="0" name="increment" class="form-control"
+                                value="<?= e((string)$edit['increment']) ?>">
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">Total Salary (Basic + Increment)</label>
+                            <input type="text" class="form-control"
+                                value="Rs. <?= number_format((float)$edit['total_salary'], 2) ?>" readonly>
                         </div>
 
                         <div class="form-group">
@@ -434,6 +635,8 @@ include 'includes/sidebar.php';
                                 <th>Email</th>
                                 <th>Position</th>
                                 <th>Basic Salary</th>
+                                <th>Increment</th>
+                                <th>Total Salary</th>
                                 <th>Join Date</th>
                                 <th>Action</th>
                             </tr>
@@ -443,24 +646,27 @@ include 'includes/sidebar.php';
                             <?php if (!empty($rows)): ?>
                             <?php foreach ($rows as $row): ?>
                             <tr>
-                                <td><?= e($row['employee_id']) ?></td>
+                                <td><?= e((string)$row['employee_id']) ?></td>
                                 <td><?= e($row['employee_name']) ?></td>
                                 <td><?= e($row['nic']) ?></td>
                                 <td><?= e($row['phone']) ?></td>
                                 <td><?= e($row['email']) ?></td>
                                 <td><?= e($row['position']) ?></td>
                                 <td>Rs. <?= number_format((float)$row['basic_salary'], 2) ?></td>
+                                <td>Rs. <?= number_format((float)$row['increment'], 2) ?></td>
+                                <td>Rs. <?= number_format((float)$row['total_salary'], 2) ?></td>
                                 <td><?= e($row['join_date']) ?></td>
                                 <td>
                                     <?php if ($canCrud): ?>
                                     <a href="?edit=<?= (int)$row['employee_id'] ?>" class="btn btn-light">Edit</a>
 
-                                    <form method="POST" style="display:inline-block;"
+                                    <form method="POST" class="inline-form"
                                         onsubmit="return confirm('Delete this employee?')">
                                         <?= csrf_field() ?>
                                         <input type="hidden" name="employee_id" value="<?= (int)$row['employee_id'] ?>">
-                                        <button type="submit" name="delete_employee"
-                                            class="btn btn-danger">Delete</button>
+                                        <button type="submit" name="delete_employee" class="btn btn-danger">
+                                            Delete
+                                        </button>
                                     </form>
                                     <?php else: ?>
                                     <span class="text-muted">View Only</span>
@@ -470,7 +676,7 @@ include 'includes/sidebar.php';
                             <?php endforeach; ?>
                             <?php else: ?>
                             <tr>
-                                <td colspan="9">No employee records found.</td>
+                                <td colspan="11">No employee records found.</td>
                             </tr>
                             <?php endif; ?>
                         </tbody>

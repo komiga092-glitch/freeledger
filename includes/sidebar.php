@@ -9,179 +9,227 @@ require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/functions.php';
 require_once __DIR__ . '/security.php';
 
+/* ---------- ACTIVE MENU ---------- */
 if (!function_exists('isActive')) {
-    function isActive(array $fileNames): string
+    function isActive(array $pages): string
     {
-        $currentPage = basename($_SERVER['PHP_SELF'] ?? '');
-        return in_array($currentPage, $fileNames, true) ? 'active' : '';
+        $current = basename($_SERVER['PHP_SELF'] ?? '');
+        return in_array($current, $pages, true) ? 'active' : '';
     }
 }
 
-$user_id = (int)($_SESSION['user_id'] ?? 0);
+/* ---------- SAFE BASE URL ---------- */
+$base_url = $base_url ?? './';
+
+/* ---------- ROLE DETECTION ---------- */
+$user_id    = (int)($_SESSION['user_id'] ?? 0);
 $company_id = (int)($_SESSION['company_id'] ?? 0);
-$verified_role = '';
+
+$role = '';
 
 if ($user_id > 0 && $company_id > 0 && function_exists('verify_user_role')) {
-    $verified_role = (string) verify_user_role($user_id, $company_id);
+    $verifiedRole = verify_user_role($user_id, $company_id);
+    if (is_string($verifiedRole) && trim($verifiedRole) !== '') {
+        $role = $verifiedRole;
+    }
 }
 
-if ($verified_role === '') {
-    $verified_role = normalize_role_value((string)($_SESSION['role'] ?? $_SESSION['role_in_company'] ?? ''));
+if ($role === '') {
+    $role = (string)($_SESSION['role_in_company'] ?? $_SESSION['role'] ?? '');
 }
 
-$verified_role = normalize_role_value($verified_role);
+$role = function_exists('normalize_role_value')
+    ? normalize_role_value($role)
+    : strtolower(trim($role));
 
-$isOrganization = ($verified_role === 'organization');
-$isAuditor      = ($verified_role === 'auditor');
-$isAccountant   = ($verified_role === 'accountant');
-
-$base_url = $base_url ?? '/';
+/* ---------- ROLE FLAGS ---------- */
+$isOrganization = $role === 'organization';
+$isAccountant   = $role === 'accountant';
+$isAuditor      = $role === 'auditor';
 
 /*
 |--------------------------------------------------------------------------
-| Permission Model
+| Permission Rules
 |--------------------------------------------------------------------------
-| organization -> view transactions only
-| auditor      -> view transactions only + audit menus
-| accountant   -> full transaction work
+| Organization : manage users + view reports + view transactions (VIEW ONLY)
+| Accountant   : add/edit/delete accounting data + reports (FULL CRUD)
+| Auditor      : view company data + reports + audit tools only (VIEW ONLY)
+|--------------------------------------------------------------------------
 */
-$canManageUsers       = $isOrganization;
-$canViewTransactions  = in_array($verified_role, ['organization', 'auditor', 'accountant'], true);
-$canCrudTransactions  = $isAccountant;
-$canViewReports       = in_array($verified_role, ['organization', 'auditor', 'accountant'], true);
-$canAudit             = $isAuditor;
+$canManageUsers  = $isOrganization;
+$canViewCompany  = in_array($role, ['organization', 'accountant', 'auditor'], true);
+$canCrud         = $isAccountant; // Only accountant can CRUD
+$canReports      = $canViewCompany;
+$canAudit        = $isAuditor;
+
+/* ---------- DISPLAY INFO ---------- */
+$companyName = (string)($_SESSION['company_name'] ?? 'No Company Selected');
+$displayRole = $role !== '' ? ucfirst($role) : 'User';
 ?>
 
 <aside class="sidebar" id="sidebar">
+
+    <!-- BRAND -->
     <div class="sidebar-brand">
-        <div class="brand-badge">📊</div>
+        <div class="brand-icon">📊</div>
         <h2>FreeLedger</h2>
-        <p>Professional Finance Suite</p>
+        <small>Finance & Audit</small>
     </div>
 
-    <div class="sidebar-menu">
+    <nav class="sidebar-menu">
+
+        <!-- MAIN -->
         <div class="menu-label">Main</div>
 
-        <a href="<?= e($base_url) ?>dashboard.php" class="<?= e(isActive(['dashboard.php'])) ?>">
-            <span class="icon">🏠</span>
-            <span>Dashboard</span>
+        <a href="<?= e($base_url) ?>dashboard.php" class="<?= isActive(['dashboard.php']) ?>">
+            🏠 Dashboard
         </a>
 
+        <?php if ($isAuditor): ?>
+        <a href="<?= e($base_url) ?>select_company.php" class="<?= isActive(['select_company.php']) ?>">
+            🏢 Select Company
+        </a>
+        <?php endif; ?>
+
+        <!-- USER MANAGEMENT -->
         <?php if ($canManageUsers): ?>
         <div class="menu-label">User Management</div>
 
-        <a href="add_accountant.php" class="<?= e(isActive(['add_accountant.php'])) ?>">
-            <span class="icon">👤</span>
-            <span>Add Accountant</span>
+        <a href="<?= e($base_url) ?>add_accountant.php" class="<?= isActive(['add_accountant.php']) ?>">
+            👤 Add Accountant
         </a>
 
-        <a href="add_auditor.php" class="<?= e(isActive(['add_auditor.php'])) ?>">
-            <span class="icon">🔍</span>
-            <span>Add Auditor</span>
+        <a href="<?= e($base_url) ?>auditor_directory.php" class="<?= isActive(['auditor_directory.php']) ?>">
+            🧑‍⚖️ Find Auditor
+        </a>
+
+        <a href="<?= e($base_url) ?>auditor_messages.php" class="<?= isActive(['auditor_messages.php']) ?>">
+            💬 Auditor Messages
+        </a>
+
+        <a href="<?= e($base_url) ?>auditor_feedback.php" class="<?= isActive(['auditor_feedback.php']) ?>">
+            ⭐ Auditor Feedback
         </a>
         <?php endif; ?>
 
-        <?php if ($canViewTransactions): ?>
+        <!-- TRANSACTIONS -->
+        <?php if ($canViewCompany): ?>
         <div class="menu-label">Transactions</div>
 
-        <a href="<?= e($base_url) ?>income.php" class="<?= e(isActive(['income.php'])) ?>">
-            <span class="icon">💰</span>
-            <span>Income</span>
+        <a href="<?= e($base_url) ?>income.php"
+            class="<?= isActive(['income.php', 'income_add.php', 'income_edit.php']) ?>">
+            💰 Income
         </a>
 
-        <a href="<?= e($base_url) ?>expenses.php" class="<?= e(isActive(['expenses.php'])) ?>">
-            <span class="icon">💸</span>
-            <span>Expenses</span>
+        <a href="<?= e($base_url) ?>expenses.php"
+            class="<?= isActive(['expenses.php', 'expense_add.php', 'expense_edit.php']) ?>">
+            💸 Expenses
         </a>
 
-        <a href="<?= e($base_url) ?>cash_account.php" class="<?= e(isActive(['cash_account.php'])) ?>">
-            <span class="icon">💵</span>
-            <span>Cash Account</span>
+        <a href="<?= e($base_url) ?>cash_account.php"
+            class="<?= isActive(['cash_account.php', 'cash_add.php', 'cash_edit.php']) ?>">
+            💵 Cash Account
         </a>
 
-        <a href="<?= e($base_url) ?>bank_account.php" class="<?= e(isActive(['bank_account.php'])) ?>">
-            <span class="icon">🏦</span>
-            <span>Bank Account</span>
+        <a href="<?= e($base_url) ?>bank_account.php"
+            class="<?= isActive(['bank_account.php', 'bank_add.php', 'bank_edit.php']) ?>">
+            🏦 Bank Account
         </a>
 
+        <!-- STATEMENTS -->
         <div class="menu-label">Statements</div>
-
-        <a href="<?= e($base_url) ?>assets.php" class="<?= e(isActive(['assets.php'])) ?>">
-            <span class="icon">📦</span>
-            <span>Assets</span>
+        <a href="<?= e($base_url) ?>assets.php"
+            class="<?= isActive(['assets.php', 'asset_add.php', 'asset_edit.php']) ?>">
+            📦 Assets
         </a>
 
-        <a href="<?= e($base_url) ?>liabilities.php" class="<?= e(isActive(['liabilities.php'])) ?>">
-            <span class="icon">📉</span>
-            <span>Liabilities</span>
+        <a href="<?= e($base_url) ?>liabilities.php"
+            class="<?= isActive(['liabilities.php', 'liability_payment.php', 'liability_add.php', 'liability_edit.php']) ?>">
+            📉 Liabilities
         </a>
 
-        <div class="menu-label">HR & Payroll</div>
-
-        <a href="<?= e($base_url) ?>employees.php" class="<?= e(isActive(['employees.php'])) ?>">
-            <span class="icon">👥</span>
-            <span>Employees</span>
+        <a href="<?= e($base_url) ?>receivables.php"
+            class="<?= isActive(['receivables.php', 'receivable_collection.php']) ?>">
+            📈 Receivables
         </a>
 
-        <a href="<?= e($base_url) ?>salaries.php" class="<?= e(isActive(['salaries.php'])) ?>">
-            <span class="icon">🧾</span>
-            <span>Salaries</span>
-        </a>
-        <?php endif; ?>
-
-
-        <?php if ($canViewReports): ?>
+        <!-- REPORTS -->
         <div class="menu-label">Reports</div>
-
         <a href="<?= e($base_url) ?>income_expenditure_report.php"
-            class="<?= e(isActive(['income_expenditure_report.php'])) ?>">
-            <span class="icon">📄</span>
-            <span>Income & Expenditure</span>
+            class="<?= isActive(['income_expenditure_report.php']) ?>">
+            📄 Income & Expenditure
         </a>
 
         <a href="<?= e($base_url) ?>assets_liabilities_report.php"
-            class="<?= e(isActive(['assets_liabilities_report.php'])) ?>">
-            <span class="icon">📑</span>
-            <span>Assets & Liabilities</span>
+            class="<?= isActive(['assets_liabilities_report.php']) ?>">
+            📑 Balance Sheet
+        </a>
+
+        <a href="<?= e($base_url) ?>audit_reports.php"
+            class="<?= isActive(['audit_reports.php', 'audit_report_review.php', 'audit_report_create.php']) ?>">
+            📝 Audit Reports
         </a>
         <?php endif; ?>
 
+        <!-- HR -->
+        <?php if (!$isAuditor && $canViewCompany): ?>
+        <div class="menu-label">HR</div>
 
+        <a href="<?= e($base_url) ?>employees.php"
+            class="<?= isActive(['employees.php', 'employee_add.php', 'employee_edit.php']) ?>">
+            👥 Employees
+        </a>
+
+        <a href="<?= e($base_url) ?>employee_advances.php" class="<?= isActive(['employee_advances.php']) ?>">
+            💳 Employee Advances
+        </a>
+
+        <a href="<?= e($base_url) ?>salaries.php"
+            class="<?= isActive(['salaries.php', 'salary_add.php', 'salary_edit.php']) ?>">
+            🧾 Salaries
+        </a>
+        <?php endif; ?>
+
+        <!-- AUDITOR TOOLS -->
         <?php if ($canAudit): ?>
-        <div class="menu-label">Audit Management</div>
+        <div class="menu-label">Auditor Tools</div>
 
-        <a href="<?= e($base_url) ?>auditor/audit_notes.php" class="<?= e(isActive(['audit_notes.php'])) ?>">
-            <span class="icon">📝</span>
-            <span>Audit Notes</span>
+        <a href="<?= e($base_url) ?>auditor_profile.php" class="<?= isActive(['auditor_profile.php']) ?>">
+            🧑‍💼 Auditor Profile
         </a>
 
-        <a href="<?= e($base_url) ?>auditor/audit_reports.php" class="<?= e(isActive(['audit_reports.php'])) ?>">
-            <span class="icon">✅</span>
-            <span>Audit Reports</span>
+        <a href="<?= e($base_url) ?>audit_report_create.php" class="<?= isActive(['audit_report_create.php']) ?>">
+            📤 Submit Audit Report
+        </a>
+
+        <a href="<?= e($base_url) ?>auditor_messages.php" class="<?= isActive(['auditor_messages.php']) ?>">
+            💬 Messages
+        </a>
+
+        <a href="<?= e($base_url) ?>auditor_feedback.php" class="<?= isActive(['auditor_feedback.php']) ?>">
+            ⭐ Feedback
         </a>
         <?php endif; ?>
 
-
+        <!-- ACCOUNT -->
         <div class="menu-label">Account</div>
 
-        <a href="<?= e($base_url) ?>profile.php" class="<?= e(isActive(['profile.php'])) ?>">
-            <span class="icon">🙍</span>
-            <span>My Profile</span>
+
+
+        <a href="<?= e($base_url) ?>change_password.php" class="<?= isActive(['change_password.php']) ?>">
+            🔐 Password
         </a>
 
-        <a href="<?= e($base_url) ?>change_password.php" class="<?= e(isActive(['change_password.php'])) ?>">
-            <span class="icon">🔐</span>
-            <span>Change Password</span>
+        <a href="<?= e($base_url) ?>logout.php">
+            🚪 Logout
         </a>
 
-        <a href="<?= e($base_url) ?>logout.php" class="<?= e(isActive(['logout.php'])) ?>">
-            <span class="icon">🚪</span>
-            <span>Logout</span>
-        </a>
-    </div>
+    </nav>
 
+    <!-- FOOTER -->
     <div class="sidebar-footer">
-        <div><strong><?= e($_SESSION['company_name'] ?? 'No Company') ?></strong></div>
-        <div><?= e($verified_role !== '' ? ucfirst($verified_role) : 'User') ?></div>
+        <strong><?= e($companyName) ?></strong>
+        <span><?= e($displayRole) ?></span>
     </div>
+
 </aside>

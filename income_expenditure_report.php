@@ -1,23 +1,45 @@
 <?php
-session_start();
-require_once 'config/db.php';
+declare(strict_types=1);
 
-if (!isset($_SESSION['user_id'])) {
+session_start();
+
+require_once 'config/db.php';
+require_once 'includes/security.php';
+require_once 'includes/functions.php';
+
+set_security_headers();
+
+if (!isset($_SESSION['user_id']) || (int)($_SESSION['user_id'] ?? 0) <= 0) {
     header("Location: login.php");
     exit;
 }
 
 $company_id = (int)($_SESSION['company_id'] ?? 0);
+$user_id    = (int)($_SESSION['user_id'] ?? 0);
+
 if ($company_id <= 0) {
     header("Location: dashboard.php");
     exit;
 }
 
+/* ---------- ROLE CHECK ---------- */
+if (function_exists('verify_user_role')) {
+    $currentRole = verify_user_role($user_id, $company_id);
+} else {
+    $currentRole = normalize_role_value((string)($_SESSION['role_in_company'] ?? $_SESSION['role'] ?? ''));
+}
+
+$currentRole = normalize_role_value((string)$currentRole);
+
+if (!in_array($currentRole, ['organization', 'accountant', 'auditor'], true)) {
+    die('Access denied.');
+}
+
 $pageTitle = 'Income & Expenditure Report';
 $pageDescription = 'Professional English financial statement';
 
-$from_date = trim($_GET['from_date'] ?? date('Y-m-01'));
-$to_date   = trim($_GET['to_date'] ?? date('Y-m-d'));
+$from_date = trim((string)($_GET['from_date'] ?? date('Y-m-01')));
+$to_date   = trim((string)($_GET['to_date'] ?? date('Y-m-d')));
 
 if ($from_date === '' || $to_date === '') {
     $from_date = date('Y-m-01');
@@ -25,21 +47,21 @@ if ($from_date === '' || $to_date === '') {
 }
 
 if ($from_date > $to_date) {
-    $temp = $from_date;
-    $from_date = $to_date;
-    $to_date = $temp;
+    [$from_date, $to_date] = [$to_date, $from_date];
 }
 
 /* =========================
    COMPANY
 ========================= */
 $company = [];
+
 $stmt = $conn->prepare("
     SELECT company_id, company_name, registration_no, email, phone, address
     FROM companies
     WHERE company_id = ?
     LIMIT 1
 ");
+
 $stmt->bind_param("i", $company_id);
 $stmt->execute();
 $res = $stmt->get_result();
@@ -49,7 +71,7 @@ $stmt->close();
 /* =========================
    INCOME SUMMARY
 ========================= */
-$total_income = 0;
+$total_income = 0.00;
 $income_summary = [];
 
 $stmt = $conn->prepare("
@@ -60,25 +82,29 @@ $stmt = $conn->prepare("
     GROUP BY income_type
     ORDER BY income_type ASC
 ");
+
 $stmt->bind_param("iss", $company_id, $from_date, $to_date);
 $stmt->execute();
 $res = $stmt->get_result();
 
 while ($row = $res->fetch_assoc()) {
-    $type = trim($row['income_type'] ?? '') ?: 'Other Income';
+    $type = trim((string)($row['income_type'] ?? '')) ?: 'Other Income';
     $amount = (float)$row['total_amount'];
+
     $income_summary[] = [
         'income_type' => $type,
         'amount' => $amount
     ];
+
     $total_income += $amount;
 }
+
 $stmt->close();
 
 /* =========================
    EXPENSE SUMMARY
 ========================= */
-$total_expense = 0;
+$total_expense = 0.00;
 $expense_summary = [];
 
 $stmt = $conn->prepare("
@@ -89,19 +115,23 @@ $stmt = $conn->prepare("
     GROUP BY expense_type
     ORDER BY expense_type ASC
 ");
+
 $stmt->bind_param("iss", $company_id, $from_date, $to_date);
 $stmt->execute();
 $res = $stmt->get_result();
 
 while ($row = $res->fetch_assoc()) {
-    $type = trim($row['expense_type'] ?? '') ?: 'Other Expense';
+    $type = trim((string)($row['expense_type'] ?? '')) ?: 'Other Expense';
     $amount = (float)$row['total_amount'];
+
     $expense_summary[] = [
         'expense_type' => $type,
         'amount' => $amount
     ];
+
     $total_expense += $amount;
 }
+
 $stmt->close();
 
 $net_result = $total_income - $total_expense;
@@ -119,6 +149,7 @@ $stmt = $conn->prepare("
       AND income_date BETWEEN ? AND ?
     ORDER BY income_date ASC, income_id ASC
 ");
+
 $stmt->bind_param("iss", $company_id, $from_date, $to_date);
 $stmt->execute();
 $res = $stmt->get_result();
@@ -126,6 +157,7 @@ $res = $stmt->get_result();
 while ($row = $res->fetch_assoc()) {
     $income_rows[] = $row;
 }
+
 $stmt->close();
 
 /* =========================
@@ -140,6 +172,7 @@ $stmt = $conn->prepare("
       AND expense_date BETWEEN ? AND ?
     ORDER BY expense_date ASC, expense_id ASC
 ");
+
 $stmt->bind_param("iss", $company_id, $from_date, $to_date);
 $stmt->execute();
 $res = $stmt->get_result();
@@ -147,12 +180,17 @@ $res = $stmt->get_result();
 while ($row = $res->fetch_assoc()) {
     $expense_rows[] = $row;
 }
+
 $stmt->close();
 
 include 'includes/header.php';
-include 'includes/sidebar.php';
 ?>
 
+<script src="assets/js/html2pdf.bundle.min.js"></script>
+
+<?php
+include 'includes/sidebar.php';
+?>
 <div class="main-area">
     <div class="topbar no-print">
         <div class="topbar-left">
@@ -165,7 +203,7 @@ include 'includes/sidebar.php';
 
         <div class="topbar-right">
             <div class="company-pill"><?= e($_SESSION['company_name'] ?? 'Company') ?></div>
-            <div class="role-pill"><?= e($_SESSION['role'] ?? 'User') ?></div>
+            <div class="role-pill"><?= e(ucfirst($currentRole)) ?></div>
             <div class="user-chip">
                 <div class="avatar"><?= e(strtoupper(substr($_SESSION['full_name'] ?? 'U', 0, 1))) ?></div>
                 <div class="meta">
@@ -180,8 +218,14 @@ include 'includes/sidebar.php';
         <div class="card no-print">
             <div class="card-header">
                 <h3>Report Filters</h3>
-                <div style="display:flex; gap:10px; flex-wrap:wrap;">
-                    <button type="button" onclick="window.print()" class="btn btn-primary">Print Report</button>
+                <div class="report-header" style="display:flex; gap:10px; align-items:center;">
+                    <button type="button" onclick="window.print()" class="btn btn-primary">
+                        🖨 Print
+                    </button>
+
+                    <button type="button" onclick="downloadPDF()" class="btn btn-secondary">
+                        ⬇ Download PDF
+                    </button>
                 </div>
             </div>
 
@@ -209,11 +253,11 @@ include 'includes/sidebar.php';
 
         <div class="card print-card" id="printArea">
             <div class="card-body">
-                <div style="text-align:center; margin-bottom:28px;">
+                <div class="report-title">
                     <h2 style="margin-bottom:8px;">INCOME & EXPENDITURE STATEMENT</h2>
                     <h3 style="margin-bottom:6px;"><?= e($company['company_name'] ?? 'Company') ?></h3>
-                    <div style="margin-bottom:4px;">Registration No: <?= e($company['registration_no'] ?? '-') ?></div>
-                    <div style="margin-bottom:4px;">Period: <?= e($from_date) ?> to <?= e($to_date) ?></div>
+                    <div class="report-period">Registration No: <?= e($company['registration_no'] ?? '-') ?></div>
+                    <div class="report-period">Period: <?= e($from_date) ?> to <?= e($to_date) ?></div>
                 </div>
 
                 <div class="grid grid-3 no-print" style="margin-bottom:24px;">
@@ -246,13 +290,13 @@ include 'includes/sidebar.php';
                 </div>
 
                 <div class="table-wrap" style="margin-bottom:24px;">
-                    <table class="table">
+                    <table class="table report-table">
                         <thead>
                             <tr>
-                                <th style="width:50%;">Income</th>
-                                <th style="width:20%; text-align:right;">Amount (Rs.)</th>
-                                <th style="width:30%;">Expenditure</th>
-                                <th style="width:20%; text-align:right;">Amount (Rs.)</th>
+                                <th>Income</th>
+                                <th class="amount">Amount (Rs.)</th>
+                                <th>Expenditure</th>
+                                <th class="amount">Amount (Rs.)</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -261,18 +305,17 @@ include 'includes/sidebar.php';
                             if ($max_rows === 0):
                             ?>
                             <tr>
-                                <td colspan="4" style="text-align:center;">No report data found for the selected period.
-                                </td>
+                                <td colspan="4" class="text-center">No report data found for the selected period.</td>
                             </tr>
                             <?php else: ?>
                             <?php for ($i = 0; $i < $max_rows; $i++): ?>
                             <tr>
                                 <td><?= e($income_summary[$i]['income_type'] ?? '') ?></td>
-                                <td style="text-align:right;">
+                                <td class="amount">
                                     <?= isset($income_summary[$i]) ? number_format((float)$income_summary[$i]['amount'], 2) : '' ?>
                                 </td>
                                 <td><?= e($expense_summary[$i]['expense_type'] ?? '') ?></td>
-                                <td style="text-align:right;">
+                                <td class="amount">
                                     <?= isset($expense_summary[$i]) ? number_format((float)$expense_summary[$i]['amount'], 2) : '' ?>
                                 </td>
                             </tr>
@@ -280,33 +323,33 @@ include 'includes/sidebar.php';
 
                             <tr>
                                 <th>Total Income</th>
-                                <th style="text-align:right;">Rs. <?= number_format($total_income, 2) ?></th>
+                                <th class="amount">Rs. <?= number_format($total_income, 2) ?></th>
                                 <th>Total Expenditure</th>
-                                <th style="text-align:right;">Rs. <?= number_format($total_expense, 2) ?></th>
+                                <th class="amount">Rs. <?= number_format($total_expense, 2) ?></th>
                             </tr>
                             <tr>
                                 <th colspan="3"><?= e($result_label) ?></th>
-                                <th style="text-align:right;">Rs. <?= number_format(abs($net_result), 2) ?></th>
+                                <th class="amount">Rs. <?= number_format(abs($net_result), 2) ?></th>
                             </tr>
                             <?php endif; ?>
                         </tbody>
                     </table>
                 </div>
 
-                <div class="card" style="margin-top:24px;">
+                <div class="card report-summary">
                     <div class="card-header">
                         <h3>Detailed Income Transactions</h3>
                     </div>
                     <div class="card-body">
                         <div class="table-wrap">
-                            <table class="table">
+                            <table class="table report-table">
                                 <thead>
                                     <tr>
                                         <th>Date</th>
                                         <th>Income Type</th>
                                         <th>Description</th>
                                         <th>Payment Source</th>
-                                        <th style="text-align:right;">Amount (Rs.)</th>
+                                        <th class="amount">Amount (Rs.)</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -323,7 +366,7 @@ include 'includes/sidebar.php';
                                     <?php endforeach; ?>
                                     <?php else: ?>
                                     <tr>
-                                        <td colspan="5" style="text-align:center;">No income transactions found.</td>
+                                        <td colspan="5" class="text-center">No income transactions found.</td>
                                     </tr>
                                     <?php endif; ?>
                                 </tbody>
@@ -338,14 +381,14 @@ include 'includes/sidebar.php';
                     </div>
                     <div class="card-body">
                         <div class="table-wrap">
-                            <table class="table">
+                            <table class="table report-table">
                                 <thead>
                                     <tr>
                                         <th>Date</th>
                                         <th>Expense Type</th>
                                         <th>Description</th>
                                         <th>Payment Source</th>
-                                        <th style="text-align:right;">Amount (Rs.)</th>
+                                        <th class="amount">Amount (Rs.)</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -362,7 +405,7 @@ include 'includes/sidebar.php';
                                     <?php endforeach; ?>
                                     <?php else: ?>
                                     <tr>
-                                        <td colspan="5" style="text-align:center;">No expense transactions found.</td>
+                                        <td colspan="5" class="text-center">No expense transactions found.</td>
                                     </tr>
                                     <?php endif; ?>
                                 </tbody>
@@ -390,45 +433,42 @@ include 'includes/sidebar.php';
     </div>
 </div>
 
-<style>
-@media print {
-
-    .sidebar,
-    .topbar,
-    .menu-toggle,
-    .no-print,
-    .btn,
-    form {
-        display: none !important;
+<script>
+function downloadPDF() {
+    if (typeof html2pdf === 'undefined') {
+        alert('PDF library not loaded. Please check your internet connection or use Print → Save as PDF.');
+        return;
     }
 
-    body,
-    .main-area,
-    .content,
-    .card,
-    .card-body {
-        margin: 0 !important;
-        padding: 0 !important;
-        background: #fff !important;
-        box-shadow: none !important;
+    const element = document.getElementById('printArea');
+
+    if (!element) {
+        alert('Report area not found.');
+        return;
     }
 
-    .print-card {
-        border: none !important;
-    }
+    const options = {
+        margin: 0.4,
+        filename: 'income_expenditure_report.pdf',
+        image: {
+            type: 'jpeg',
+            quality: 0.98
+        },
+        html2canvas: {
+            scale: 2,
+            useCORS: true
+        },
+        jsPDF: {
+            unit: 'in',
+            format: 'a4',
+            orientation: 'portrait'
+        }
+    };
 
-    .table {
-        width: 100%;
-        border-collapse: collapse;
-    }
-
-    .table th,
-    .table td {
-        border: 1px solid #000 !important;
-        padding: 8px !important;
-        font-size: 12px !important;
-    }
+    html2pdf()
+        .set(options)
+        .from(element)
+        .save();
 }
-</style>
-
+</script>
 <?php include 'includes/footer.php'; ?>
